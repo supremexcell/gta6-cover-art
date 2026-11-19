@@ -1,0 +1,31 @@
+html, body { margin: 0; min-height: 100%; background: #17101f; color: #f5f0f8; font: 15px/1.45 system-ui, sans-serif; }
+.app { display: flex; gap: 28px; align-items: flex-start; justify-content: center; padding: 24px; box-sizing: border-box; }
+.controls { display: flex; flex-direction: column; gap: 16px; width: 320px; flex: none; }
+.controls h1 { margin: 0; font-size: 30px; letter-spacing: 0.5px; }
+.controls h1::after { content: ""; display: block; width: 64px; height: 5px; margin-top: 6px; background: linear-gradient(90deg, #ff8c3c, #ff4f8c, #7a2bff); border-radius: 3px; }
+.tagline { margin: 0; color: #c9b8d6; }
+.group { background: #241a30; border: 1px solid #3a2a4d; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.group h2 { margin: 0; font-size: 15px; text-transform: uppercase; letter-spacing: 1px; color: #ffd23d; }
+.hint { margin: 0; font-size: 13px; color: #b9a8c9; }
+label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 14px; }
+input[type=text], select { font: inherit; padding: 9px; border: 1px solid #55436b; border-radius: 8px; background: #17101f; color: #fff; }
+input[type=range] { width: 100%; accent-color: #ff4f8c; }
+.val { font-weight: 400; color: #ffd23d; }
+.lab { display: flex; justify-content: space-between; align-items: baseline; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+button { font: inherit; font-weight: 700; padding: 9px 12px; border: 0; border-radius: 8px; background: #3a2a4d; color: #fff; cursor: pointer; }
+button:hover { background: #4d3766; }
+#export { background: linear-gradient(90deg, #ff8c3c, #ff4f8c); font-size: 16px; padding: 12px; }
+#export:hover { filter: brightness(1.1); }
+.tabs { display: flex; gap: 6px; }
+.tab { flex: 1; }
+.tab.active { background: #ff4f8c; }
+#status { margin: 0; min-height: 1.2em; color: #8fe3a0; font-size: 14px; }
+.preview { position: sticky; top: 24px; }
+.preview canvas { width: min(72vh, 62vw); height: auto; max-height: 88vh; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55); border-radius: 6px; touch-action: none; cursor: grab; }
+.preview canvas:active { cursor: grabbing; }
+body.shot-cover .controls { display: none; }
+body.shot-cover .app { padding: 0; }
+body.shot-cover .preview { position: static; }
+body.shot-cover canvas { width: 100vw; height: 100vh; max-height: none; box-shadow: none; border-radius: 0; }
+@media (max-width: 900px) { .app { flex-direction: column; } .controls { width: 100%; } .preview { position: static; } .preview canvas { width: 100%; } }

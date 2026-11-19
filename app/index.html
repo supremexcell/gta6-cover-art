@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cover Maker — GTA Style</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23241533'/%3E%3Ccircle cx='16' cy='13' r='7' fill='%23ff4f8c'/%3E%3Crect x='6' y='22' width='20' height='4' rx='2' fill='%23ffd23d'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<main class="app">
+  <section class="controls">
+    <h1>Cover Maker</h1>
+    <p class="tagline">Foto + judul jadi cover ala poster GTA 6. Semua offline — foto tidak pernah keluar dari mesin ini.</p>
+
+    <div class="group">
+      <h2>1. Foto panel</h2>
+      <div id="panel-tabs" class="tabs" role="tablist"></div>
+      <label>Upload foto <input id="photo" type="file" accept="image/*"></label>
+      <div class="row">
+        <button type="button" data-sample="samples/boulevard.jpg">Contoh: Boulevard</button>
+        <button type="button" data-sample="samples/pier.jpg">Contoh: Dermaga</button>
+        <button type="button" id="clear-panel">Kosongkan</button>
+      </div>
+      <label><span class="lab">Zoom <span class="val" id="zoom-val">100%</span></span>
+        <input id="zoom" type="range" min="1" max="2.5" step="0.05" value="1"></label>
+      <label><span class="lab">Geser kiri-kanan <span class="val" id="ox-val">0</span></span>
+        <input id="ox" type="range" min="-1" max="1" step="0.05" value="0"></label>
+      <label><span class="lab">Geser atas-bawah <span class="val" id="oy-val">0</span></span>
+        <input id="oy" type="range" min="-1" max="1" step="0.05" value="0"></label>
+      <p class="hint">Tip: seret foto langsung di pratinjau untuk menggesernya.</p>
+    </div>
+
+    <div class="group">
+      <h2>2. Judul &amp; gaya</h2>
+      <label>Judul <input id="caption" type="text" maxlength="40" value="Sunset Heist"></label>
+      <label>Tagline <input id="subcaption" type="text" maxlength="40" value="Sunset Nights"></label>
+      <label>Filter
+        <select id="filter"></select></label>
+      <label><span class="lab">Kekuatan filter <span class="val" id="strength-val">100%</span></span>
+        <input id="strength" type="range" min="0" max="1" step="0.05" value="1"></label>
+      <label><span class="lab">Level Ilustrasi (1 = halus, 5 = paling mirip grafik game) <span class="val" id="level-val">Level 4</span></span>
+        <input id="level" type="range" min="1" max="5" step="1" value="4"></label>
+      <p class="hint">Makin tinggi levelnya, makin foto terlihat seperti diambil dari grafik game itu sendiri — Level 1 hampir seperti foto, Level 5 paling mirip grafik game.</p>
+      <label><span class="lab">Level Wanted (0 = bersih, 5 = paling dicari) <span class="val" id="wanted-val">3 bintang</span></span>
+        <input id="wanted" type="range" min="0" max="5" step="1" value="3"></label>
+      <p class="hint">Bintang wanted ala HUD game di pojok kanan atas cover — makin banyak bintang, makin dicari.</p>
+    </div>
+
+    <div class="group">
+      <h2>3. Ekspor</h2>
+      <label>Ukuran PNG
+        <select id="size">
+          <option value="1080x1080" selected>1080 × 1080 (persegi)</option>
+          <option value="1080x1350">1080 × 1350 (potret)</option>
+          <option value="1920x1080">1920 × 1080 (lebar)</option>
+        </select></label>
+      <button id="export" type="button">Ekspor PNG</button>
+      <p id="status" role="status"></p>
+    </div>
+  </section>
+  <div class="preview">
+    <canvas id="cover" width="1080" height="1080" aria-label="Pratinjau cover"></canvas>
+  </div>
+</main>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
