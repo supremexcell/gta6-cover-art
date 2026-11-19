@@ -1,110 +1,102 @@
 // Drawing engine for the GTA-style multi-panel cover maker.
 // Everything is drawn with the plain 2D canvas API and system fonts — no
-// external assets, no Rockstar artwork, logo or font. Panels are clipped
-// rectangles with a white gutter; the caption is bold uppercase lettering
-// with an outline so it stays readable over any photo.
+// external assets, no Rockstar artwork, logo or font. Photos bleed to the
+// edges, the title overlaps the photos like a real movie poster, and the
+// bottom strip carries palm silhouettes, a tagline and fine print.
 //
-// Filters are ORIGINAL colour grades + illustration effects written here
-// in canvas code (saturation/contrast curves, flat-colour quantization,
-// hard cel-shading, bold ink outlines, halftone dots, vignette) — a
-// comic key-art treatment in the spirit of Rockstar's GTA VI key art.
-// The game names only label palettes inspired by those games' covers;
-// no official artwork, logo, character or font is copied, downloaded
-// or embedded.
+// THE ILLUSTRATION ENGINE IS COLOUR-ONLY (Vicko's direction, 2026-11-19):
+// the photos stay SHARP and detailed at every level — what changes is the
+// COLOUR, like an overlay layer. No posterize/quantization, no heavy blur
+// before quantization, nothing that flattens detail into blocks. The
+// "unreal" game feel comes from colour + texture:
+//   - a gradient map (duotone-style ramp per game palette) blended over
+//     the photo by luminance, strength growing with the level;
+//   - a smooth S-curve contrast lift (a LUT, never a step);
+//   - split-toning through the same ramp (shadows one colour, highlights
+//     another) — the CSS colour curve (saturate/contrast/sepia/hue) still
+//     runs underneath, also smooth;
+//   - film grain (deterministic hash noise, luminance only) and a very
+//     thin halftone in deep shadows, both as texture that never hides
+//     detail;
+//   - a warm light-leak glow and a vignette as overlays;
+//   - outlines only as a faint darkening on the strongest real contours
+//     (1px, low alpha, never dilated) — never thick ink.
+// Level 1 is almost the plain photo; Level 5 is the strongest colour
+// grade + the most texture, but the photo is still sharp. Skin is
+// protected (the grade is faded on skin-like pixels) so faces stay
+// natural and photographic.
+//
+// Filters are ORIGINAL colour grades written here in canvas code. The
+// game names only label palettes inspired by those games' covers; no
+// official artwork, logo, character or font is copied, downloaded or
+// embedded.
 
-/** Filter catalogue: wash + sun + numeric colour curve. The numbers are the
- *  FULL-strength grade for that game-inspired palette; the Level control
- *  interpolates them toward "plain photo" (see levelDef below), so the
- *  higher the level, the more the photo reads as that game's graphics.
- *  sat/con/bri are multipliers around 1, sepia 0..1, hue in degrees. The
- *  grades are pushed toward the vivid key-art palette (hot pink, orange,
- *  teal, purple, warm sunset) — strong enough to read as game art, but
- *  kept controlled so skin never goes red or purple. */
+/** Filter catalogue: wash + sun + numeric colour curve + gradient-map
+ *  ramp (shadow / mid / highlight RGB). The numbers are the FULL-strength
+ *  grade for that game-inspired palette; the Level control interpolates
+ *  them toward "plain photo" (see levelDef below), so the higher the
+ *  level, the more the photo reads as that game's graphics. */
 export const FILTERS = {
   gta6: {
     label: 'GTA VI — Ilustrasi Neon',
     wash: 'sunset', sun: true,
-    sat: 1.38, con: 1.16, bri: 1.03, sepia: 0, hue: 0,
+    sat: 1.30, con: 1.12, bri: 1.03, sepia: 0, hue: 0,
+    ramp: [[30, 10, 54], [232, 110, 70], [255, 210, 110]],
   },
   sa: {
     label: 'GTA San Andreas — 90-an Hangat',
     wash: 'gold', sun: false,
-    sat: 1.32, con: 1.12, bri: 1.0, sepia: 0.28, hue: -8,
+    sat: 1.28, con: 1.10, bri: 1.0, sepia: 0.28, hue: -8,
+    ramp: [[52, 32, 14], [206, 138, 44], [255, 240, 200]],
   },
   gtav: {
     label: 'GTA V — Teal & Oranye',
     wash: 'teal', sun: false,
-    sat: 1.30, con: 1.14, bri: 1.0, sepia: 0, hue: 8,
+    sat: 1.26, con: 1.11, bri: 1.0, sepia: 0, hue: 8,
+    ramp: [[8, 42, 48], [38, 140, 138], [255, 178, 110]],
   },
   gta4: {
     label: 'GTA IV — Dingin',
     wash: 'cold', sun: false,
-    sat: 0.68, con: 1.10, bri: 0.98, sepia: 0, hue: 0,
+    sat: 0.72, con: 1.08, bri: 0.98, sepia: 0, hue: 0,
+    ramp: [[14, 20, 28], [88, 104, 122], [222, 232, 238]],
   },
   vc: {
     label: 'GTA Vice City — Pastel 80-an',
     wash: 'pastel', sun: false,
-    sat: 1.26, con: 1.08, bri: 1.06, sepia: 0, hue: -12,
+    sat: 1.22, con: 1.06, bri: 1.06, sepia: 0, hue: -12,
+    ramp: [[52, 38, 92], [255, 122, 184], [184, 255, 242]],
   },
   gta3: {
     label: 'GTA III — Gritty',
     wash: 'dark', sun: false,
-    sat: 0.90, con: 1.26, bri: 0.94, sepia: 0, hue: 0,
+    sat: 0.92, con: 1.20, bri: 0.94, sepia: 0, hue: 0,
+    ramp: [[20, 16, 12], [138, 106, 74], [232, 216, 184]],
   },
 };
 export const DEFAULT_FILTER = 'gta6';
 export function filterDef(key) { return FILTERS[key] || FILTERS[DEFAULT_FILTER]; }
 
-/** Illustration levels 1..5 — a STYLE TRANSFER, not a filter getting
- *  stronger (Vicko's Naruto analogy: the higher the level, the more the
- *  photo becomes that game's graphics, as if it were a screenshot taken
- *  in-game). Level 1 is almost the plain photo; Levels 4-5 are the full
- *  comic key-art treatment: bold ink outlines, flat vibrant colour
- *  blocks, hard cel-shading, halftone dots in the shadows.
- *
- *  The old engines failed two ways, and this table fixes both:
- *  - The FIRST engine posterized to 4-6 levels after one blur: skin
- *    collapsed into flat red/orange/purple patches, noise became
- *    speckles — weird, not game-like.
- *  - The SECOND engine went too far the other way (10-16 posterize
- *    levels, thin subtle edges): gradients stayed smooth, but the result
- *    was still just a filtered photo — Vicko called it ugly ("Jelek!").
- *    It had no bold outlines, no flat colour blocks, no hard cel
- *    shading — nothing that reads as Rockstar key art.
- *
- *  This engine gets the key-art look from STRUCTURE, not from crushing
- *  colours:
- *  - posterize: colour levels per channel for the flat blocks (5 at
- *    Level 5). Flat, but the image is HEAVILY blurred first (blur
- *    passes) so blocks follow real shapes instead of noise, and skin is
- *    protected (see applyIllustration).
- *  - cel: hard cel-shading strength 0..1. Each flat region is split
- *    into a lit tone and a shadow tone with a HARD edge between them
- *    (luminance vs its local mean), like comic-book shading — the
- *    shading has a visible shape, not a smooth gradient.
- *  - edge: bold ink outlines on major contours only. The edge map is
- *    computed from a MODERATELY blurred luminance (2 passes: JPEG noise
- *    and skin texture already gone, but real contours still carry a
- *    strong gradient — on the heavily blurred image the gradients are
- *    spread so thin no threshold catches them), so only real contours
- *    (jawline, hair silhouette, hat brim, clothing edges, railing) get
- *    lines — never speckles on skin or sky. `line` is the dilation
- *    radius in px (lines ~2*line+1 px thick, clearly visible at export
- *    resolution); `ink` is how close to near-black the line goes.
- *  - halftone: dot texture in shadow areas only, 0..1. Dots are drawn
- *    in code; density grows with the level and sells the printed-comic
- *    feel of key art.
- *  - blur: how many separable blur passes run before any of this — more
- *    blur at high levels means flatter blocks and cleaner outlines.
+/** Illustration levels 1..5 — a COLOUR-ONLY style transfer (Vicko's
+ *  Naruto analogy: the higher the level, the more the photo becomes
+ *  that game's graphics, as if it were a screenshot taken in-game).
+ *  Level 1 is almost the plain photo; Level 5 is the strongest grade
+ *  and the most texture — the photo itself never loses detail.
+ *  - map: gradient-map blend 0..1 (colour ramp by luminance).
+ *  - curve: smooth S-curve contrast strength 0..1.
+ *  - grain: film-grain amplitude in 0..255 units (luminance noise).
+ *  - halftone: thin halftone-dot strength in deep shadows 0..1.
+ *  - edge: faint outline darkening on the strongest real contours only
+ *    (edgeA = max alpha, edgeThreshold = gradient bar). 1px, no dilation.
  *  - cssT: how much of the filter's colour curve applies (1 = full
- *    grade). washT: how much of the colour wash applies. sunT: neon-sun
- *    strength (GTA VI). */
+ *    grade). washT: how much of the colour wash applies. glowT: warm
+ *    light-leak glow strength. sunT: neon-sun glow strength (GTA VI). */
 export const LEVELS = {
-  1: { name: 'Halus — hampir foto', posterize: 0, edge: false, edgeThreshold: 0, ink: 0, line: 0, cel: 0, halftone: 0, blur: 0, cssT: 0.3, washT: 0.6, sunT: 0 },
-  2: { name: 'Ringan', posterize: 8, edge: true, edgeThreshold: 70, ink: 0.55, line: 0, cel: 0.35, halftone: 0, blur: 2, cssT: 0.55, washT: 0.75, sunT: 0.5 },
-  3: { name: 'Sedang', posterize: 7, edge: true, edgeThreshold: 55, ink: 0.7, line: 1, cel: 0.6, halftone: 0.4, blur: 3, cssT: 0.75, washT: 0.85, sunT: 0.75 },
-  4: { name: 'Kuat — mirip grafik game', posterize: 6, edge: true, edgeThreshold: 45, ink: 0.85, line: 1, cel: 0.85, halftone: 0.7, blur: 4, cssT: 0.9, washT: 1, sunT: 1 },
-  5: { name: 'Maksimal — paling mirip grafik game', posterize: 5, edge: true, edgeThreshold: 35, ink: 0.95, line: 1, cel: 1, halftone: 1, blur: 4, cssT: 1, washT: 1, sunT: 1 },
+  1: { name: 'Halus — hampir foto', map: 0.12, curve: 0.06, grain: 0, halftone: 0, edge: false, edgeThreshold: 0, edgeA: 0, cssT: 0.3, washT: 0.6, glowT: 0, sunT: 0 },
+  2: { name: 'Ringan', map: 0.28, curve: 0.14, grain: 3, halftone: 0.15, edge: true, edgeThreshold: 70, edgeA: 0.06, cssT: 0.55, washT: 0.75, glowT: 0.4, sunT: 0.5 },
+  3: { name: 'Sedang', map: 0.42, curve: 0.22, grain: 5, halftone: 0.3, edge: true, edgeThreshold: 60, edgeA: 0.09, cssT: 0.75, washT: 0.85, glowT: 0.7, sunT: 0.75 },
+  4: { name: 'Kuat — mirip grafik game', map: 0.55, curve: 0.28, grain: 7, halftone: 0.45, edge: true, edgeThreshold: 52, edgeA: 0.12, cssT: 0.9, washT: 1, glowT: 0.9, sunT: 1 },
+  5: { name: 'Maksimal — paling mirip grafik game', map: 0.68, curve: 0.34, grain: 9, halftone: 0.6, edge: true, edgeThreshold: 45, edgeA: 0.15, cssT: 1, washT: 1, glowT: 1, sunT: 1 },
 };
 export const DEFAULT_LEVEL = 4;
 export function levelDef(level) {
@@ -123,6 +115,13 @@ export function wantedNumber(wanted) {
   const n = Math.round(Number(wanted));
   return Number.isFinite(n) ? Math.min(5, Math.max(0, n)) : DEFAULT_WANTED;
 }
+
+/** Default poster dressing (original wording, drawn in code): role
+ *  labels for the three panels and the press quote above the title. */
+export const DEFAULT_ROLES = ['THE ANGLER', 'THE DRIVER', 'ONE LAST SUMMER'];
+export const DEFAULT_QUOTE = '"CHASE THE LAST LIGHT" — SUNSET GAZETTE';
+export const DEFAULT_TAGLINE = 'ONE LAST SUNSET • NO LOOKING BACK';
+export const DEFAULT_FINEPRINT = 'SUNSET HEIST — A COVER STUDIO PICTURE • STARRING YOU • SHOT ON YOUR OWN CAMERA • CAT. SH-2626';
 
 /** A five-pointed star path, drawn in code — an original shape, not a
  *  Rockstar asset or downloaded image. */
@@ -144,9 +143,8 @@ function starPath(ctx, cx, cy, rOuter, rInner) {
  *  filled gold with a dark outline; unlit slots are dim outlines, so the
  *  row always reads as five stars. The pill is deliberately COMPACT and
  *  sits high in the top margin strip, overlapping the panel tops by only
- *  a few pixels — over sky or hair tips at most, never over a face: in
- *  every layout the faces sit well below the pill's bottom edge. Level 0
- *  draws nothing. */
+ *  a few pixels — over sky or hair tips at most, never over a face.
+ *  Level 0 draws nothing. */
 function drawWanted(ctx, w, h, wanted) {
   const n = wantedNumber(wanted);
   if (n <= 0) return;
@@ -194,6 +192,7 @@ function drawWanted(ctx, w, h, wanted) {
   }
   ctx.restore();
 }
+
 /** Builds the CSS colour curve for a filter at a given level: the grade
  *  fades toward a plain photo as the level drops. */
 export function buildCss(filter, level) {
@@ -209,39 +208,48 @@ export function buildCss(filter, level) {
   return parts.join(' ');
 }
 
-/** Layout of the three panels plus the caption band, in 0..1 coordinates. */
+/** Layout of the three full-bleed panels, the title zone (overlapping
+ *  the photos), the bottom strip and the seal, in 0..1 coordinates.
+ *  Photos run edge to edge and meet the bottom strip — there is NO
+ *  empty caption band anywhere. */
 export function layoutFor(w, h) {
   const r = w / h;
   if (r < 0.9) {
     // Portrait (e.g. 1080x1350): hero across the top, two panels below it.
     return {
       panels: [
-        { x: 0.03, y: 0.025, w: 0.94, h: 0.52 },
-        { x: 0.03, y: 0.565, w: 0.46, h: 0.24 },
-        { x: 0.51, y: 0.565, w: 0.46, h: 0.24 },
+        { x: 0.02, y: 0.015, w: 0.96, h: 0.51 },
+        { x: 0.02, y: 0.535, w: 0.47, h: 0.30 },
+        { x: 0.51, y: 0.535, w: 0.47, h: 0.30 },
       ],
-      caption: { x: 0.03, y: 0.815, w: 0.94, h: 0.16 },
+      title: { x: 0.03, y: 0.60, w: 0.94, h: 0.21 },
+      strip: { x: 0, y: 0.845, w: 1, h: 0.14 },
+      seal: { x: 0.93, y: 0.61 },
     };
   }
   if (r > 1.3) {
     // Landscape (e.g. 1920x1080): hero on the left, two panels stacked right.
     return {
       panels: [
-        { x: 0.025, y: 0.04, w: 0.52, h: 0.92 },
-        { x: 0.565, y: 0.04, w: 0.41, h: 0.44 },
-        { x: 0.565, y: 0.52, w: 0.41, h: 0.44 },
+        { x: 0.012, y: 0.015, w: 0.54, h: 0.86 },
+        { x: 0.56, y: 0.015, w: 0.428, h: 0.42 },
+        { x: 0.56, y: 0.445, w: 0.428, h: 0.43 },
       ],
-      caption: { x: 0.025, y: 0.72, w: 0.52, h: 0.24 },
+      title: { x: 0.03, y: 0.58, w: 0.94, h: 0.26 },
+      strip: { x: 0, y: 0.885, w: 1, h: 0.10 },
+      seal: { x: 0.93, y: 0.59 },
     };
   }
-  // Square (1080x1080): hero top-left, two panels top-right, caption band below.
+  // Square (1080x1080): hero top-left, two panels top-right.
   return {
     panels: [
-      { x: 0.03, y: 0.03, w: 0.60, h: 0.60 },
-      { x: 0.65, y: 0.03, w: 0.32, h: 0.29 },
-      { x: 0.65, y: 0.34, w: 0.32, h: 0.29 },
+      { x: 0.015, y: 0.015, w: 0.60, h: 0.83 },
+      { x: 0.625, y: 0.015, w: 0.36, h: 0.405 },
+      { x: 0.625, y: 0.43, w: 0.36, h: 0.415 },
     ],
-    caption: { x: 0.03, y: 0.66, w: 0.94, h: 0.31 },
+    title: { x: 0.03, y: 0.58, w: 0.94, h: 0.25 },
+    strip: { x: 0, y: 0.855, w: 1, h: 0.13 },
+    seal: { x: 0.93, y: 0.59 },
   };
 }
 
@@ -285,36 +293,12 @@ function drawPlaceholder(ctx, rect, label, i) {
   ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2);
 }
 
-/** One separable 3-tap box-blur pass (horizontal then vertical, in place).
- *  Two passes give a smooth, wide falloff that kills JPEG noise and skin
- *  texture before any quantization — the old single 3x3 pass left noise
- *  that posterize then turned into speckles and blotches. */
-function boxBlurPass(data, w, h, tmp) {
-  for (let y = 0; y < h; y++) {
-    const row = y * w * 4;
-    for (let x = 0; x < w; x++) {
-      const xm = x > 0 ? x - 1 : 0, xp = x + 1 < w ? x + 1 : w - 1;
-      const i = row + x * 4, im = row + xm * 4, ip = row + xp * 4;
-      for (let c = 0; c < 3; c++) tmp[i + c] = (data[im + c] + data[i + c] + data[ip + c]) / 3;
-      tmp[i + 3] = data[i + 3];
-    }
-  }
-  for (let y = 0; y < h; y++) {
-    const ym = y > 0 ? y - 1 : 0, yp = y + 1 < h ? y + 1 : h - 1;
-    const row = y * w * 4, rm = ym * w * 4, rp = yp * w * 4;
-    for (let x = 0; x < w; x++) {
-      const i = row + x * 4, im = rm + x * 4, ip = rp + x * 4;
-      for (let c = 0; c < 3; c++) data[i + c] = (tmp[im + c] + tmp[i + c] + tmp[ip + c]) / 3;
-    }
-  }
-}
-
 /** How skin-like a pixel is (0..1), from its colour: skin is warm, red
  *  above green above blue, with a moderate red-green gap. Used to protect
- *  faces: skin pixels are blended back toward the smooth blurred colour
- *  instead of being posterized into flat patches, and edge lines on skin
- *  are softened. Hair and warm clothing score partly too, which is fine —
- *  they also look better smooth than posterized. */
+ *  faces: the gradient map is faded on skin-like pixels so faces keep
+ *  their natural colour, and grain is softened there too. Hair and warm
+ *  clothing score partly too, which is fine — they also look better
+ *  natural than over-graded. */
 function skinScore(r, g, b) {
   if (r < 70 || r <= g || g < b) return 0;
   const rg = r - g, gb = g - b;
@@ -327,211 +311,150 @@ function skinScore(r, g, b) {
   return Math.max(0, Math.min(1, s));
 }
 
-/** Separable 3-tap box blur for a single-channel Float32Array
- *  (luminance), run `passes` times for a smooth falloff. Used for the
- *  local-mean map that drives the hard cel-shading split: a pixel is in
- *  shadow when it is clearly darker than its neighbourhood, lit when
- *  clearly brighter — the boundary between the two is a HARD edge, like
- *  comic-book cel shading. */
-function blurLum(src, w, h, passes) {
-  const tmp = new Float32Array(w * h);
-  let a = src, b = tmp;
-  for (let k = 0; k < passes; k++) {
-    for (let y = 0; y < h; y++) {
-      const row = y * w;
-      for (let x = 0; x < w; x++) {
-        const xm = x > 0 ? x - 1 : 0, xp = x + 1 < w ? x + 1 : w - 1;
-        b[row + x] = (a[row + xm] + a[row + x] + a[row + xp]) / 3;
-      }
-    }
-    for (let y = 0; y < h; y++) {
-      const ym = y > 0 ? y - 1 : 0, yp = y + 1 < h ? y + 1 : h - 1;
-      const row = y * w, rm = ym * w, rp = yp * w;
-      for (let x = 0; x < w; x++) {
-        a[row + x] = (b[rm + x] + b[row + x] + b[rp + x]) / 3;
-      }
-    }
+/** Gradient-map LUT for a filter's ramp: 256 entries of RGB, shadow at
+ *  luminance 0, mid at 128, highlight at 255, linearly interpolated —
+ *  a smooth colour ramp, never a step. */
+function buildRampLUT(filter) {
+  const ramp = filter.ramp || [[0, 0, 0], [128, 128, 128], [255, 255, 255]];
+  const lut = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let a, b, f;
+    if (t < 0.5) { a = ramp[0]; b = ramp[1]; f = t * 2; }
+    else { a = ramp[1]; b = ramp[2]; f = (t - 0.5) * 2; }
+    lut[i * 3] = a[0] + (b[0] - a[0]) * f;
+    lut[i * 3 + 1] = a[1] + (b[1] - a[1]) * f;
+    lut[i * 3 + 2] = a[2] + (b[2] - a[2]) * f;
   }
-  return a;
+  return lut;
 }
 
-/** Comic key-art illustration, applied to one panel's pixels so a photo
- *  reads as Rockstar-style key art — bold ink outlines, flat vibrant
- *  colour blocks, hard cel-shading, halftone dots. The pipeline:
- *  1. HEAVY blur (several separable passes): JPEG noise and skin
- *     texture are gone before any quantization, so flat blocks follow
- *     real shapes instead of noise — this is what keeps coarse
- *     quantization from turning into blotchy patches.
- *  2. Flat colour blocks: per-channel quantization to a few levels
- *     (5 at Level 5), then a HARD cel split — each region becomes a
- *     lit tone or a shadow tone depending on whether its luminance is
- *     clearly above or below its local mean, with a sharp boundary.
- *     Skin-like pixels are protected: finer steps, a gentler two-tone
- *     split, and a 55% blend back toward the smooth blurred colour, so
- *     faces keep warm, natural two-tone shading and never collapse
- *     into flat red/purple patches.
- *  3. Bold ink outlines: gradient magnitude on the HEAVILY blurred
- *     luminance, high threshold, so only major contours (jawline, hair
- *     silhouette, hat brim, clothing edges, railing) get lines — never
- *     speckles on skin or sky. The edge mask is dilated so lines are
- *     clearly visible at export resolution, then painted near-black
- *     (softened on skin).
- *  4. Halftone dots in shadow areas only (never on skin): a dot grid
- *     drawn in code, density growing with the level — the printed-comic
- *     feel of key art.
- *  Level 1 skips the pass entirely (almost a plain photo); higher
- *  levels are the style transfer toward key art. */
-function applyIllustration(octx, w, h, filter, level) {
+/** Smooth S-curve contrast LUT: y = x + k * x*(1-x)*(x-0.5)*4 — a
+ *  gentle lift of highlights and dip of shadows, no steps, no clipping. */
+function buildCurveLUT(k) {
+  const lut = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    const y = x + k * x * (1 - x) * (x - 0.5) * 4;
+    lut[i] = Math.max(0, Math.min(255, Math.round(y * 255)));
+  }
+  return lut;
+}
+
+/** Deterministic integer hash in [0,1) — film grain that is identical
+ *  on every render, so screenshots are stable. */
+function hash01(x, y, s) {
+  let h = (x * 374761393 + y * 668265263 + s * 1442695041) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 4294967295;
+}
+
+/** One separable 3-tap box-blur pass on a single-channel Float32Array
+ *  (luminance), in place. Only used to soften the edge map — never on
+ *  the photo itself, so no detail is ever blurred away. */
+function blurLumOnce(src, w, h) {
+  const tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const xm = x > 0 ? x - 1 : 0, xp = x + 1 < w ? x + 1 : w - 1;
+      tmp[row + x] = (src[row + xm] + src[row + x] + src[row + xp]) / 3;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    const ym = y > 0 ? y - 1 : 0, yp = y + 1 < h ? y + 1 : h - 1;
+    const row = y * w, rm = ym * w, rp = yp * w;
+    for (let x = 0; x < w; x++) {
+      src[row + x] = (tmp[rm + x] + tmp[row + x] + tmp[rp + x]) / 3;
+    }
+  }
+}
+
+/** COLOUR-ONLY illustration grade, applied to one panel's pixels.
+ *  The photo's detail is never touched: no quantization, no blur of
+ *  the image, no flattening. What changes is colour and texture:
+ *  1. Smooth S-curve contrast (LUT).
+ *  2. Gradient map: each pixel's colour is mixed toward the filter's
+ *     palette ramp by its luminance (shadows → shadow colour, highlights
+ *     → highlight colour) — split-toning by construction. Faded on skin
+ *     so faces stay natural.
+ *  3. Faint outline darkening on the strongest real contours only
+ *     (1px, low alpha, higher bar on skin) — a hint of drawn line that
+ *     follows real edges, never ink that flattens the picture.
+ *  4. Film grain: deterministic luminance noise, softened on skin.
+ *  5. Thin halftone dots in deep shadows only, subtle.
+ *  Level 1 is a whisper of grade; Level 5 is the full grade + texture
+ *  — sharp at every level. */
+function applyColorGrade(octx, w, h, filter, level) {
   const lp = levelDef(level);
   const img = octx.getImageData(0, 0, w, h);
   const d = img.data;
-  const tmp = new Float32Array(d.length);
   const n = w * h;
-  // Blur passes. After the 2nd pass, snapshot a MODERATELY blurred
-  // luminance for the edge map: 2 passes already kill JPEG noise and
-  // skin texture, but real contours still have a strong gradient there.
-  // (On the heavily blurred image the same gradients are spread so thin
-  // that no threshold catches them — the first version's outlines were
-  // nearly invisible. The heavy blur still drives the quantization and
-  // the cel split, so speckles never appear.)
+  const ramp = buildRampLUT(filter);
+  const curve = buildCurveLUT(lp.curve);
+  const map = lp.map;
   let edgeLum = null;
-  for (let k = 0; k < (lp.blur || 0); k++) {
-    boxBlurPass(d, w, h, tmp);
-    if (k === 1) {
-      edgeLum = new Float32Array(n);
-      for (let p = 0; p < n; p++) {
-        const i = p * 4;
-        edgeLum[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      }
-    }
-  }
-  // Keep a copy of the heavily blurred pixels: quantization, cel split
-  // and edges all read from it.
-  const blurred = new Uint8ClampedArray(d);
-  const lum = new Float32Array(n);
-  for (let p = 0; p < n; p++) {
-    const i = p * 4;
-    lum[p] = 0.299 * blurred[i] + 0.587 * blurred[i + 1] + 0.114 * blurred[i + 2];
-  }
-  if (!edgeLum) edgeLum = lum;
-  // Local mean luminance (extra-blurred copy) for the hard cel split.
-  const mean = blurLum(lum.slice(), w, h, 2);
-  // Pass 1 — flat colour blocks + hard cel-shading.
-  const Q = lp.posterize;
-  const step = 255 / (Q - 1);
-  const skinQ = Math.min(16, Q + 5);
-  const skinStep = 255 / (skinQ - 1);
-  const cel = lp.cel ?? 0;
-  const shadowMask = new Uint8Array(n);
-  for (let p = 0; p < n; p++) {
-    const i = p * 4;
-    const r = blurred[i], g = blurred[i + 1], b = blurred[i + 2];
-    const sk = skinScore(r, g, b);
-    const ratio = lum[p] / (mean[p] + 1);
-    const inShadow = ratio < 0.94;
-    const inLight = ratio > 1.06;
-    if (inShadow && sk < 0.3) shadowMask[p] = 1;
-    if (sk > 0) {
-      // Faces: finer steps, gentler two-tone split, mostly the smooth
-      // blurred colour — warm natural shading, never flat patches.
-      let fs = 1;
-      if (inShadow) fs = 1 - 0.12 * cel;
-      else if (inLight) fs = 1 + 0.04 * cel;
-      const keep = sk * 0.55;
-      const m = 1 - keep;
-      d[i] = Math.round(r / skinStep) * skinStep * fs * m + r * keep;
-      d[i + 1] = Math.round(g / skinStep) * skinStep * fs * m + g * keep;
-      d[i + 2] = Math.round(b / skinStep) * skinStep * fs * m + b * keep;
-    } else {
-      // Flat block + hard cel split: shadow tone or lit tone, sharp edge.
-      let f = 1;
-      if (inShadow) f = 1 - 0.30 * cel;
-      else if (inLight) f = 1 + 0.10 * cel;
-      d[i] = Math.round(r / step) * step * f;
-      d[i + 1] = Math.round(g / step) * step * f;
-      d[i + 2] = Math.round(b / step) * step * f;
-    }
-  }
-  // Pass 2 — bold ink outlines on major contours only.
-  // The gradient uses CENTRAL differences (lum[x+1]-lum[x-1]), so a real
-  // contour gives a 2px-wide continuous response instead of a 1px line
-  // that fires intermittently — the first version's lines came out
-  // dashed. Thresholds are scaled to the ~2x larger central-difference
-  // magnitudes.
-  let inkMask = null;
   if (lp.edge) {
-    const thr = lp.edgeThreshold;
-    const edge = new Uint8Array(n);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const p = y * w + x;
+    edgeLum = new Float32Array(n);
+    for (let p = 0; p < n; p++) {
+      const i = p * 4;
+      edgeLum[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    }
+    blurLumOnce(edgeLum, w, h);
+  }
+  const thr = lp.edgeThreshold || 0;
+  const edgeA = lp.edgeA || 0;
+  const grain = lp.grain || 0;
+  const ht = lp.halftone || 0;
+  const seed = 1234;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const i = p * 4;
+      let r = d[i], g = d[i + 1], b = d[i + 2];
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) | 0;
+      // 1. Smooth contrast curve.
+      r = curve[r]; g = curve[g]; b = curve[b];
+      const sk = skinScore(r, g, b);
+      // 2. Gradient map (colour only), faded on skin.
+      if (map > 0) {
+        const m = map * (1 - 0.6 * sk);
+        const ri = lum * 3;
+        r = r * (1 - m) + ramp[ri] * m;
+        g = g * (1 - m) + ramp[ri + 1] * m;
+        b = b * (1 - m) + ramp[ri + 2] * m;
+      }
+      // 3. Faint outline on the strongest contours only.
+      if (edgeLum) {
         const xl = x > 0 ? edgeLum[p - 1] : edgeLum[p];
         const xr = x + 1 < w ? edgeLum[p + 1] : edgeLum[p];
         const yu = y > 0 ? edgeLum[p - w] : edgeLum[p];
         const yd = y + 1 < h ? edgeLum[p + w] : edgeLum[p];
         const mag = Math.max(Math.abs(xr - xl), Math.abs(yd - yu));
-        const i = p * 4;
-        // On skin the bar is higher, so faces get outlines only on
-        // their real contours (jawline, hairline) — never speckles.
-        const t = skinScore(blurred[i], blurred[i + 1], blurred[i + 2]) > 0.4 ? thr * 1.8 : thr;
-        if (mag > t) edge[p] = 1;
-      }
-    }
-    // Dilate so lines read bold at export resolution.
-    const r = lp.line || 0;
-    const dil = new Uint8Array(n);
-    if (r === 0) {
-      dil.set(edge);
-    } else {
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          if (!edge[y * w + x]) continue;
-          for (let dy = -r; dy <= r; dy++) {
-            const yy = y + dy;
-            if (yy < 0 || yy >= h) continue;
-            for (let dx = -r; dx <= r; dx++) {
-              const xx = x + dx;
-              if (xx >= 0 && xx < w) dil[yy * w + xx] = 1;
-            }
-          }
+        const t = sk > 0.4 ? thr * 1.6 : thr;
+        if (mag > t) {
+          const a = Math.min(edgeA, edgeA * ((mag - t) / 60));
+          r = r * (1 - a) + 22 * a;
+          g = g * (1 - a) + 8 * a;
+          b = b * (1 - a) + 30 * a;
         }
       }
-    }
-    const ink = lp.ink ?? 0.8;
-    const IR = 22, IG = 8, IB = 30; // near-black plum ink
-    inkMask = dil; // kept so the halftone pass never punches dots into ink
-    for (let p = 0; p < n; p++) {
-      if (!dil[p]) continue;
-      const i = p * 4;
-      const sk = skinScore(blurred[i], blurred[i + 1], blurred[i + 2]);
-      const a = ink * (sk > 0.4 ? 0.35 : 1);
-      d[i] = d[i] * (1 - a) + IR * a;
-      d[i + 1] = d[i + 1] * (1 - a) + IG * a;
-      d[i + 2] = d[i + 2] * (1 - a) + IB * a;
-    }
-  }
-  // Pass 3 — halftone dots in shadow areas only (never on skin, never
-  // on ink lines — the dots must texture flat shadow areas, not punch
-  // holes into the outlines). Kept subtle so it reads as print texture,
-  // not speckle.
-  if ((lp.halftone ?? 0) > 0) {
-    const s = lp.halftone >= 1 ? 6 : lp.halftone >= 0.7 ? 7 : 9;
-    const rad = s * 0.26 * lp.halftone;
-    const c = s / 2;
-    for (let y = 0; y < h; y++) {
-      const dy = (y % s) - c;
-      for (let x = 0; x < w; x++) {
-        const p = y * w + x;
-        if (!shadowMask[p]) continue;
-        if (inkMask && inkMask[p]) continue;
-        const dx = (x % s) - c;
+      // 4. Film grain (luminance noise, softer on skin).
+      if (grain > 0) {
+        const nz = (hash01(x, y, seed) - 0.5) * 2 * grain * (1 - 0.5 * sk);
+        r += nz; g += nz; b += nz;
+      }
+      // 5. Thin halftone in deep shadows only.
+      if (ht > 0 && lum < 80) {
+        const s = 7, c = s / 2;
+        const dx = (x % s) - c, dy = (y % s) - c;
+        const rad = s * 0.22 * ht;
         if (dx * dx + dy * dy < rad * rad) {
-          const i = p * 4;
-          d[i] *= 0.72;
-          d[i + 1] *= 0.72;
-          d[i + 2] *= 0.72;
+          r *= 0.9; g *= 0.9; b *= 0.9;
         }
       }
+      d[i] = r; d[i + 1] = g; d[i + 2] = b;
     }
   }
   octx.putImageData(img, 0, 0);
@@ -556,19 +479,19 @@ function drawPanel(ctx, panel, rect, i, filter, level) {
   } else {
     drawPlaceholder(octx, local, `PANEL ${i + 1}`, i);
   }
-  const lp = levelDef(level);
-  if (lp.posterize > 1 || lp.edge) applyIllustration(octx, w, h, filter, level);
+  applyColorGrade(octx, w, h, filter, level);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(off, rect.x, rect.y, rect.w, rect.h);
 }
 
-/** The colour wash for a filter, plus its sun disc when it has one.
- *  `sunT` (0..1, from the level) fades the neon sun out at low levels. */
+/** The colour wash for a filter, plus a soft neon-sun GLOW when it has
+ *  one (a radial gradient only — no hard disc, nothing sticker-like).
+ *  `sunT` (0..1, from the level) fades the glow out at low levels. */
 function applyWash(ctx, w, h, filter, strength, sunT) {
   const s = strength <= 0 ? 0 : strength;
   const stopsFor = (wash) => ({
-    sunset: [[0, [255, 140, 60, 0.12]], [0.5, [255, 80, 140, 0.20]], [1, [120, 40, 180, 0.30]]],
+    sunset: [[0, [255, 140, 60, 0.12]], [0.5, [255, 80, 140, 0.16]], [1, [120, 40, 180, 0.24]]],
     gold: [[0, [255, 190, 80, 0.15]], [0.55, [255, 120, 50, 0.15]], [1, [0, 110, 120, 0.18]]],
     teal: [[0, [60, 200, 170, 0.12]], [0.5, [255, 140, 60, 0.14]], [1, [10, 60, 50, 0.18]]],
     cold: [[0, [140, 170, 200, 0.14]], [1, [20, 30, 50, 0.24]]],
@@ -581,30 +504,42 @@ function applyWash(ctx, w, h, filter, strength, sunT) {
     ? ctx.createLinearGradient(0, 0, 0, h)
     : ctx.createLinearGradient(0, 0, w, h);
   for (const [off, [r, gg, b, a]] of stops) {
-    g.addColorStop(off, `rgba(${r},${gg},${b},${a * s})`);
+    g.addColorStop(off, `rgba(${r},${gg},${b},${(a * s * 0.85).toFixed(3)})`);
   }
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, w, h);
   if (filter.sun && s > 0 && (sunT ?? 1) > 0) {
     const st = s * (sunT ?? 1);
-    // Sun disc tucked into the top-left sky corner, never on a face.
-    const cx = w * 0.12, cy = h * 0.07, r = Math.min(w, h) * 0.04;
-    const glow = ctx.createRadialGradient(cx, cy, r * 0.2, cx, cy, r * 1.8);
-    glow.addColorStop(0, `rgba(255,210,61,${0.55 * st})`);
-    glow.addColorStop(0.5, `rgba(255,94,61,${0.28 * st})`);
-    glow.addColorStop(1, 'rgba(255,94,61,0)');
+    const cx = w * 0.12, cy = h * 0.07, r = Math.min(w, h) * 0.10;
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    glow.addColorStop(0, `rgba(255,214,90,${(0.5 * st).toFixed(3)})`);
+    glow.addColorStop(0.55, `rgba(255,120,80,${(0.22 * st).toFixed(3)})`);
+    glow.addColorStop(1, 'rgba(255,120,80,0)');
     ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * 1.8, 0, Math.PI * 2);
-    ctx.fill();
-    const disc = ctx.createLinearGradient(cx, cy - r, cx, cy + r);
-    disc.addColorStop(0, `rgba(255,220,90,${0.9 * st})`);
-    disc.addColorStop(1, `rgba(255,120,60,${0.9 * st})`);
-    ctx.fillStyle = disc;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+/** Warm light-leak glow in the top-left corner (screen blend, so it
+ *  only ever lightens) plus a faint magenta kiss bottom-right. */
+function drawGlow(ctx, w, h, t) {
+  if (t <= 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  const g = ctx.createRadialGradient(w * 0.12, h * 0.05, 0, w * 0.12, h * 0.05, Math.max(w, h) * 0.45);
+  g.addColorStop(0, `rgba(255,190,90,${(0.30 * t).toFixed(3)})`);
+  g.addColorStop(0.5, `rgba(255,110,140,${(0.12 * t).toFixed(3)})`);
+  g.addColorStop(1, 'rgba(255,110,140,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  const g2 = ctx.createRadialGradient(w * 0.95, h * 0.95, 0, w * 0.95, h * 0.95, Math.max(w, h) * 0.35);
+  g2.addColorStop(0, `rgba(255,80,160,${(0.10 * t).toFixed(3)})`);
+  g2.addColorStop(1, 'rgba(255,80,160,0)');
+  ctx.fillStyle = g2;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
 }
 
 /** Fits one line of text, shrinking it until it fits the given width.
@@ -632,20 +567,178 @@ function fitFont(ctx, text, maxWidth, startSize, opts = {}) {
  *  Heavy extra-bold condensed system stack: 'Arial Narrow' gives the
  *  tall, narrow poster feel on systems that have it (Windows/macOS) and
  *  falls back cleanly to plain bold sans-serif elsewhere — no downloaded
- *  or web fonts, everything offline. The white-to-warm-gold vertical
- *  gradient echoes the neon sunset wash, the thick dark outline and soft
- *  drop shadow keep it readable over any photo, and a touch of tracking
- *  keeps the caps airy like a movie-poster title. The tagline pairs with
- *  it: same gold as the wanted stars, wide-tracked small caps. */
+ *  or web fonts, everything offline. The white-to-warm-gold-to-orange
+ *  sunset gradient, thick dark outline and soft drop shadow keep it
+ *  readable over any photo. The script subtitle pairs with it: italic
+ *  bold Georgia in neon pink with a glow, like the script on the
+ *  top-ranked covers. */
 const TITLE_FAMILY = '"Arial Narrow", "Helvetica Neue", Arial, sans-serif';
+const SCRIPT_FAMILY = 'Georgia, "Times New Roman", serif';
+
+/** A role label pill on a panel: white pill, dark bold caps, top-left
+ *  inside the panel. */
+function drawRoleLabel(ctx, rect, text) {
+  if (!text) return;
+  const size = Math.max(12, Math.round(rect.h * 0.055));
+  const padX = size * 0.7, padY = size * 0.42;
+  ctx.letterSpacing = '0px';
+  ctx.font = `bold ${size}px sans-serif`;
+  const tw = ctx.measureText(text).width;
+  const pw = tw + padX * 2;
+  const ph = size + padY * 2;
+  const x = rect.x + Math.max(8, rect.w * 0.03);
+  const y = rect.y + Math.max(8, rect.h * 0.04);
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.35)';
+  ctx.shadowBlur = size * 0.25;
+  ctx.shadowOffsetY = size * 0.06;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.beginPath();
+  ctx.roundRect(x, y, pw, ph, ph * 0.28);
+  ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#1c0f2e';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + padX, y + ph / 2 + size * 0.04);
+  ctx.letterSpacing = '0px';
+}
+
+/** A scalloped gold seal (starburst badge), drawn in code: "SUNSET" /
+ *  "'26" in dark plum on a gold disc. */
+function drawSeal(ctx, cx, cy, r) {
+  ctx.save();
+  const bumps = 14;
+  ctx.beginPath();
+  for (let i = 0; i <= bumps * 2; i++) {
+    const a = (i / (bumps * 2)) * Math.PI * 2;
+    const rr = i % 2 === 0 ? r : r * 0.86;
+    const x = cx + Math.cos(a) * rr;
+    const y = cy + Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  const g = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.1, cx, cy, r);
+  g.addColorStop(0, '#ffe27a');
+  g.addColorStop(1, '#ffb62d');
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.lineWidth = Math.max(2, r * 0.07);
+  ctx.strokeStyle = '#2a0f3d';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.72, 0, Math.PI * 2);
+  ctx.lineWidth = Math.max(1, r * 0.03);
+  ctx.strokeStyle = 'rgba(42,15,61,0.55)';
+  ctx.stroke();
+  ctx.fillStyle = '#2a0f3d';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.letterSpacing = '0px';
+  ctx.font = `900 ${Math.round(r * 0.34)}px ${TITLE_FAMILY}`;
+  ctx.fillText('SUNSET', cx, cy - r * 0.16);
+  ctx.font = `900 ${Math.round(r * 0.44)}px ${TITLE_FAMILY}`;
+  ctx.fillText("'26", cx, cy + r * 0.32);
+  ctx.restore();
+}
+
+/** One palm silhouette: a leaning trunk and five fronds, drawn in code. */
+function drawPalm(ctx, x, baseY, s, lean, color) {
+  const topX = x + lean * s;
+  const topY = baseY - 2.3 * s;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(1.5, s * 0.13);
+  ctx.beginPath();
+  ctx.moveTo(x, baseY);
+  ctx.quadraticCurveTo(x + lean * s * 0.3, baseY - 1.2 * s, topX, topY);
+  ctx.stroke();
+  ctx.lineWidth = Math.max(1, s * 0.10);
+  const fronds = [-2.6, -1.9, -1.2, -0.5, 0.2];
+  for (const a of fronds) {
+    const ex = topX + Math.cos(a) * 1.7 * s;
+    const ey = topY + Math.sin(a) * 1.7 * s + 0.55 * s;
+    const cxp = topX + Math.cos(a) * 0.9 * s;
+    const cyp = topY + Math.sin(a) * 0.9 * s - 0.35 * s;
+    ctx.beginPath();
+    ctx.moveTo(topX, topY);
+    ctx.quadraticCurveTo(cxp, cyp, ex, ey);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** A small barcode-like mark: white plate with dark vertical bars. */
+function drawBarcode(ctx, x, y, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#1c0f2e';
+  let bx = x + w * 0.08;
+  let i = 0;
+  while (bx < x + w * 0.92) {
+    const bw = ((i * 37) % 3 + 1) * w * 0.03;
+    if (i % 3 !== 2) ctx.fillRect(bx, y + h * 0.08, bw, h * 0.84);
+    bx += bw + w * 0.035;
+    i++;
+  }
+  ctx.restore();
+}
+
+/** The bottom strip: sunset gradient band with palm silhouettes, the
+ *  tagline in wide-tracked caps, fine print, and a barcode mark. */
+function drawStrip(ctx, w, h, strip, tagline, fineprint) {
+  const y = strip.y * h;
+  const sh = strip.h * h;
+  const g = ctx.createLinearGradient(0, y, 0, y + sh);
+  g.addColorStop(0, '#3a1150');
+  g.addColorStop(0.45, '#a11e63');
+  g.addColorStop(1, '#ff7a3d');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, y, w, sh);
+  const palmColor = 'rgba(24,8,38,0.92)';
+  const n = Math.max(5, Math.round(w / (sh * 1.05)));
+  for (let i = 0; i < n; i++) {
+    const px = (i + 0.5) * (w / n) + (i % 2 ? sh * 0.10 : -sh * 0.07);
+    drawPalm(ctx, px, y + sh * 0.72, sh * 0.26, (i % 3 - 1) * 0.35, palmColor);
+  }
+  const tag = (tagline || '').trim().toUpperCase();
+  if (tag) {
+    const size = fitFont(ctx, tag, w * 0.84, sh * 0.30, { weight: 800, tracking: Math.max(1, Math.round(sh * 0.06)) });
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0,0,0,0.4)';
+    ctx.shadowBlur = size * 0.2;
+    ctx.fillText(tag, w / 2, y + sh * 0.52);
+    ctx.shadowBlur = 0;
+    ctx.letterSpacing = '0px';
+  }
+  const fp = (fineprint || '').trim();
+  if (fp) {
+    const size = fitFont(ctx, fp, w * 0.86, sh * 0.14, { weight: 600, tracking: Math.max(0.5, Math.round(sh * 0.02)) });
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.82)';
+    ctx.fillText(fp, w / 2, y + sh * 0.86);
+    ctx.letterSpacing = '0px';
+  }
+  drawBarcode(ctx, w * 0.955, y + sh * 0.62, w * 0.032, sh * 0.28);
+}
 
 /**
  * Draws the whole cover onto `canvas` from a state object:
- * { panels: [{img, zoom, ox, oy}], caption, subcaption, filter, filterStrength, level, wanted }
+ * { panels: [{img, zoom, ox, oy}], caption, subcaption, roles, quote,
+ *   tagline, filter, filterStrength, level, wanted }
  * `level` (1..5, default 4) is the illustration level: the higher it is,
- * the more the photo looks like it was taken from that game's graphics.
+ *  the more the photo looks like it was taken from that game's graphics —
+ *  through colour only, never by flattening detail.
  * `wanted` (0..5, default 3) is the wanted level: that many of the five
- * HUD stars in the top-right corner are lit gold.
+ *  HUD stars in the top-right corner are lit gold.
+ * The title overlaps the photos and IS the poster; the bottom strip
+ *  closes the frame — there is no empty caption band.
  */
 export function drawCover(canvas, state) {
   const ctx = canvas.getContext('2d');
@@ -654,13 +747,13 @@ export function drawCover(canvas, state) {
   const filter = filterDef(state.filter);
   const level = levelDef(state.level);
   const layout = layoutFor(w, h);
-  // Base: deep dusk purple, so empty space still looks like a poster.
-  ctx.fillStyle = '#241533';
+  // Base: deep dusk purple, visible only at the outer edge.
+  ctx.fillStyle = '#1c0f2e';
   ctx.fillRect(0, 0, w, h);
-  const gutter = Math.max(4, w * 0.008);
-  const radius = Math.max(6, w * 0.012);
-  layout.panels.forEach((p, i) => {
-    const rect = { x: p.x * w, y: p.y * h, w: p.w * w, h: p.h * h };
+  const gutter = Math.max(3, w * 0.006);
+  const radius = Math.max(4, w * 0.008);
+  const panelRects = layout.panels.map((p) => ({ x: p.x * w, y: p.y * h, w: p.w * w, h: p.h * h }));
+  panelRects.forEach((rect, i) => {
     ctx.save();
     ctx.beginPath();
     ctx.roundRect(rect.x, rect.y, rect.w, rect.h, radius);
@@ -673,73 +766,104 @@ export function drawCover(canvas, state) {
     ctx.roundRect(rect.x, rect.y, rect.w, rect.h, radius);
     ctx.stroke();
   });
-  // Colour wash over the panels, scaled by the level (lighter at level 1).
+  // Colour wash over the panels, scaled by the level.
   applyWash(ctx, w, h, filter, (state.filterStrength ?? 1) * level.washT, level.sunT);
+  // Warm light-leak glow, scaled by the level.
+  drawGlow(ctx, w, h, level.glowT ?? 0);
   // Vignette to pull the eye to the middle.
   const vig = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.max(w, h) * 0.75);
   vig.addColorStop(0, 'rgba(0,0,0,0)');
-  vig.addColorStop(1, 'rgba(10,4,20,0.35)');
+  vig.addColorStop(1, 'rgba(10,4,20,0.32)');
   ctx.fillStyle = vig;
   ctx.fillRect(0, 0, w, h);
   // Wanted HUD in the top-right corner (over the photo tops, never a face).
   drawWanted(ctx, w, h, state.wanted ?? DEFAULT_WANTED);
-  // Caption band: dark-to-transparent wash so the title always reads.
-  const cb = layout.caption;
-  // Horizon glow strip at the top of the caption band — a warm sunset
-  // line that fills the gap between the panels and the title.
-  const horizon = ctx.createLinearGradient(0, cb.y * h - h * 0.02, 0, cb.y * h + h * 0.05);
-  horizon.addColorStop(0, 'rgba(255,140,60,0)');
-  horizon.addColorStop(0.5, 'rgba(255,120,80,0.55)');
-  horizon.addColorStop(1, 'rgba(255,80,140,0)');
-  ctx.fillStyle = horizon;
-  ctx.fillRect(0, cb.y * h - h * 0.02, w, h * 0.07);
-  const band = ctx.createLinearGradient(0, cb.y * h - h * 0.06, 0, (cb.y + cb.h) * h);
-  band.addColorStop(0, 'rgba(20,8,32,0)');
-  band.addColorStop(0.35, 'rgba(20,8,32,0.82)');
-  band.addColorStop(1, 'rgba(20,8,32,0.95)');
-  ctx.fillStyle = band;
-  ctx.fillRect(0, cb.y * h - h * 0.06, w, (cb.h + 0.06) * h);
-  // Title: extra-bold condensed poster caps, auto-shrink, white-to-warm-
-  // gold sunset gradient with a thick dark outline + soft drop shadow.
+  // Role labels on the panels.
+  const roles = state.roles || DEFAULT_ROLES;
+  panelRects.forEach((rect, i) => drawRoleLabel(ctx, rect, roles[i]));
+  // ---- Title block, overlapping the photos ----
+  const tz = layout.title;
+  const tx = tz.x * w, ty = tz.y * h, tw = tz.w * w, th = tz.h * h;
+  // Soft dark shade behind the title so it reads over bright photos
+  // without a band — the photo still shows through.
+  const shade = ctx.createRadialGradient(w / 2, ty + th * 0.55, th * 0.1, w / 2, ty + th * 0.55, Math.max(tw, th) * 0.55);
+  shade.addColorStop(0, 'rgba(16,5,28,0.38)');
+  shade.addColorStop(0.6, 'rgba(16,5,28,0.20)');
+  shade.addColorStop(1, 'rgba(16,5,28,0)');
+  ctx.fillStyle = shade;
+  ctx.fillRect(tx, ty - th * 0.06, tw, th * 1.1);
+  // Press quote with gold stars, above the title.
+  const quote = (state.quote ?? DEFAULT_QUOTE).trim();
+  if (quote) {
+    const qSize = Math.max(11, Math.round(h * 0.018));
+    ctx.font = `bold ${qSize}px sans-serif`;
+    ctx.letterSpacing = '0px';
+    const qw = ctx.measureText(quote).width;
+    const starR = qSize * 0.42;
+    const starsW = 5 * starR * 2 + 4 * starR * 0.5;
+    const totalW = starsW + qSize * 0.7 + qw;
+    let sx = w / 2 - totalW / 2 + starR;
+    const sy = ty + th * 0.03;
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < 5; i++) {
+      starPath(ctx, sx, sy, starR, starR * 0.45);
+      ctx.fillStyle = '#ffd23d';
+      ctx.fill();
+      sx += starR * 2 + starR * 0.5;
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.fillText(quote, sx + qSize * 0.35, sy);
+    ctx.letterSpacing = '0px';
+  }
+  // Title: huge extra-bold condensed poster caps OVER the photos,
+  // sunset gradient fill, thick dark outline, soft drop shadow.
   const title = (state.caption || '').trim().toUpperCase();
+  let titleSize = 0;
   if (title) {
-    const maxW = cb.w * w * 0.96;
-    const size = fitFont(ctx, title, maxW, h * 0.105, { weight: 900, family: TITLE_FAMILY, tracking: Math.max(1, Math.round(h * 0.002)) });
+    const maxW = tw * 0.92;
+    const startSize = Math.min(w * 0.13, th * 0.70);
+    titleSize = fitFont(ctx, title, maxW, startSize, { weight: 900, family: TITLE_FAMILY, tracking: Math.max(1, Math.round(h * 0.002)) });
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
-    ctx.lineWidth = Math.max(4, size * 0.16);
+    ctx.lineWidth = Math.max(4, titleSize * 0.14);
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = 'rgba(20,8,32,0.95)';
+    ctx.strokeStyle = 'rgba(16,5,28,0.95)';
     ctx.shadowColor = 'rgba(0,0,0,0.55)';
-    ctx.shadowBlur = size * 0.18;
-    ctx.shadowOffsetY = size * 0.05;
-    const ty = (cb.y + cb.h * 0.52) * h;
-    ctx.strokeText(title, w / 2, ty);
-    const grad = ctx.createLinearGradient(0, ty - size * 0.85, 0, ty + size * 0.1);
+    ctx.shadowBlur = titleSize * 0.16;
+    ctx.shadowOffsetY = titleSize * 0.05;
+    const tyBase = ty + th * 0.66;
+    ctx.strokeText(title, w / 2, tyBase);
+    const grad = ctx.createLinearGradient(0, tyBase - titleSize * 0.85, 0, tyBase + titleSize * 0.1);
     grad.addColorStop(0, '#ffffff');
-    grad.addColorStop(0.65, '#fff6d8');
-    grad.addColorStop(1, '#ffd23d');
+    grad.addColorStop(0.55, '#fff6d8');
+    grad.addColorStop(0.8, '#ffd23d');
+    grad.addColorStop(1, '#ff8a3d');
     ctx.fillStyle = grad;
-    ctx.fillText(title, w / 2, ty);
+    ctx.fillText(title, w / 2, tyBase);
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
     ctx.letterSpacing = '0px';
   }
-  // Sub-caption / tagline: gold, wide-tracked small caps, thin dark
-  // outline so it reads over any photo.
+  // Script subtitle: neon-pink italic serif under the title.
   const sub = (state.subcaption || '').trim();
-  if (sub) {
-    const size = fitFont(ctx, sub.toUpperCase(), cb.w * w * 0.9, h * 0.032, { weight: 700, tracking: Math.max(1, Math.round(h * 0.014)) });
+  if (sub && titleSize > 0) {
+    const sSize = Math.max(14, Math.round(titleSize * 0.34));
+    ctx.font = `italic bold ${sSize}px ${SCRIPT_FAMILY}`;
+    ctx.letterSpacing = '0px';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
-    ctx.lineWidth = Math.max(2, size * 0.14);
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = 'rgba(20,8,32,0.85)';
-    ctx.strokeText(sub.toUpperCase(), w / 2, (cb.y + cb.h * 0.82) * h);
-    ctx.fillStyle = '#ffd23d';
-    ctx.fillText(sub.toUpperCase(), w / 2, (cb.y + cb.h * 0.82) * h);
+    ctx.shadowColor = '#ff4f8c';
+    ctx.shadowBlur = sSize * 0.55;
+    ctx.fillStyle = '#ff5e9c';
+    ctx.fillText(sub, w / 2, ty + th * 0.92);
+    ctx.shadowBlur = 0;
     ctx.letterSpacing = '0px';
   }
+  // Gold seal at the title zone's top-right.
+  drawSeal(ctx, layout.seal.x * w, layout.seal.y * h, h * 0.036);
+  // Bottom strip: palms, tagline, fine print, barcode.
+  drawStrip(ctx, w, h, layout.strip, state.tagline ?? DEFAULT_TAGLINE, DEFAULT_FINEPRINT);
   // Thin inner frame, poster style.
   ctx.lineWidth = Math.max(3, w * 0.004);
   ctx.strokeStyle = 'rgba(255,255,255,0.85)';

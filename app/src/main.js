@@ -5,7 +5,7 @@
 // (HUD stars in the top-right corner), and PNG export at
 // 1080x1080, 1080x1350 and 1920x1080. A `?shot=` query sets up a fixed
 // scene for a screenshot instead (./shots.js).
-import { drawCover, FILTERS, DEFAULT_FILTER, LEVELS, DEFAULT_LEVEL, levelNumber, DEFAULT_WANTED, wantedNumber } from './cover.js';
+import { drawCover, FILTERS, DEFAULT_FILTER, LEVELS, DEFAULT_LEVEL, levelNumber, DEFAULT_WANTED, wantedNumber, DEFAULT_ROLES, DEFAULT_QUOTE, DEFAULT_TAGLINE } from './cover.js';
 import { runShot } from './shots.js';
 
 const canvas = document.getElementById('cover');
@@ -26,6 +26,9 @@ const state = {
   ],
   caption: 'Sunset Heist',
   subcaption: 'Sunset Nights',
+  roles: [...DEFAULT_ROLES],
+  quote: DEFAULT_QUOTE,
+  tagline: DEFAULT_TAGLINE,
   filter: DEFAULT_FILTER,
   filterStrength: 1,
   level: DEFAULT_LEVEL,
@@ -214,6 +217,14 @@ if (shot) {
       state.selectedPanel = i;
       syncPanelControls();
     },
+    setPanelZoom: (i, z) => {
+      state.panels[i].zoom = z;
+      state.selectedPanel = i;
+      syncPanelControls();
+    },
+    setRoles: (r) => { state.roles = r; },
+    setQuote: (q) => { state.quote = q; },
+    setTagline: (t) => { state.tagline = t; },
     exportPNG,
     redraw,
     state,
